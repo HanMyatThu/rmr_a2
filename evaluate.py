@@ -1,58 +1,108 @@
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-import torch
+import json
+import math
 import numpy as np
-from sklearn.metrics import ndcg_score
+import torch
+from torch.utils.data import DataLoader
+from model import BERT4Rec
+from dataloader import EvalDataset, eval_collate_fn
 
-@torch.no_grad()
-def evaluate(model, dataloader, device, k=10):
+# use re-ranking evaluation strategy: with negative sampling 99
+def evaluate_rerank(
+    model, dataloader, device, num_items, k=10, neg_samples=99
+):
     model.eval()
-    ndcg_scores, recall_scores = [], []
+    items = np.arange(1, num_items + 1)
+    recalls, ndcgs = [], []
 
-    for sequences, labels, masks in dataloader:
-        sequences, labels, masks = sequences.to(device), labels.to(device), masks.to(device)
-        logits = model(sequences)
+    with torch.no_grad():
+        for seqs, future_items_list in dataloader:
+            seqs = seqs.to(device)
+            logits = model(seqs)
+            scores = logits[:, -1, :].cpu().numpy()  # use last position predictions
 
-        masked_positions = masks.nonzero(as_tuple=True)
-        masked_logits = logits[masked_positions]
-        masked_labels = labels[masked_positions]
+            for i, future_items in enumerate(future_items_list):
+                if len(future_items) == 0:
+                    continue
 
-        _, topk_indices = torch.topk(masked_logits, k=k, dim=-1)
+                # Build negative pool excluding user history
+                user_history = set(seqs[i].cpu().numpy().tolist())
+                neg_pool = [x for x in items if x not in user_history]
+                negs  = np.random.choice(neg_pool, neg_samples, replace=False)
 
-        for preds, true_item in zip(topk_indices, masked_labels):
-            relevance = np.isin(preds.cpu().numpy(), true_item.cpu().numpy()).astype(float)
-            ndcg_scores.append(ndcg_score([[1] + [0]*(k-1)], [relevance], k=k))
-            recall_scores.append(float(true_item in preds))
+                # candidatges: true items + negatives
+                users = np.concatenate([np.array(future_items), negs])
+                users_scores = scores[i, users]
+                rank_indices = np.argsort(-users_scores)
+                top_k_users = users[rank_indices][:k]
 
-    return np.mean(ndcg_scores), np.mean(recall_scores)
+                # recall: percentage of true items in top k !!
+                hits    = set(future_items) & set(top_k_users.tolist())
+                recall  = len(hits) / len(future_items)
+                recalls.append(recall)
 
-if __name__ == "__main__":
-    import json
-    from torch.utils.data import DataLoader, TensorDataset
-    from model import BERT4Rec
+                # NDCG
+                dcg = 0.0
+                for rank, item in enumerate(top_k_users):
+                    if item in hits:
+                        dcg += 1.0 / math.log2(rank + 2)
+                idcg = sum(1.0 / math.log2(i + 2) for i in range(min(len(future_items), k)))
+                ndcgs.append(dcg / idcg if idcg > 0 else 0.0)
 
+    return {'recall': np.mean(recalls), 'ndcg': np.mean(ndcgs)}
+
+if __name__ == '__main__':
+    data_dir = './processed_data'
+    checkpoint = 'model.pt'
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    test_data = np.load('./processed_data/test.npz')
-    with open('./processed_data/metadata.json', 'r') as f:
-        metadata = json.load(f)
 
-    test_dataset = TensorDataset(
-        torch.LongTensor(test_data['sequences']),
-        torch.LongTensor(test_data['labels']),
-        torch.FloatTensor(test_data['masks'])
+    # Load metadata
+    with open(os.path.join(data_dir, 'metadata.json'), 'r') as f:
+        meta = json.load(f)
+    num_items = meta['num_items']
+    seq_length = meta['seq_length']
+
+    # Load test data
+    test_inputs = np.load(os.path.join(data_dir, 'test_inputs.npy'))
+    test_labels = np.load(os.path.join(data_dir, 'test_labels.npy'), allow_pickle=True)
+    
+    # debug issue on test
+    train_inputs = np.load(os.path.join(data_dir, 'train_inputs.npy'))
+    test_items = set(np.concatenate(test_labels))
+    train_items = set(np.unique(train_inputs))
+    print(f"Test items not in training: {len(test_items - train_items)}")
+
+    test_loader = DataLoader(
+        EvalDataset(test_inputs, test_labels),
+        batch_size=64,
+        shuffle=False,
+        collate_fn=eval_collate_fn
     )
-    test_loader = DataLoader(test_dataset, batch_size=64)
 
+    # reload model with same hyperparameters used during training
     model = BERT4Rec(
-        num_items=metadata['num_items'],
-        hidden_size=128,
+        num_items=num_items,
+        hidden_size=256,
         num_heads=4,
         num_layers=2,
-        max_seq_length=metadata['seq_length'],
-        dropout=0.1
-    ).to(device)
-    model.load_state_dict(torch.load('checkpoint.pt'))
+        max_seq_len=seq_length,
+        dropout=0.2
+    )
 
-    test_ndcg, test_recall = evaluate(model, test_loader, device)
-    print(f"Final Test NDCG@10 = {test_ndcg:.4f}, Recall@10 = {test_recall:.4f}")
+    state = torch.load(checkpoint, map_location=device)
+    model.load_state_dict(state)
+    model.to(device)
+
+    # Run evaluation
+    metrics = evaluate_rerank(
+        model,
+        test_loader,
+        device,
+        num_items=num_items,
+        k=10,
+        neg_samples=99
+    )
+    print(f"Test Recall@10: {metrics['recall']:.4f}, Test NDCG@10: {metrics['ndcg']:.4f}")
+

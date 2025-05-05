@@ -1,158 +1,119 @@
-import pandas as pd
-import numpy as np
-import json
 import os
-from sklearn.model_selection import train_test_split
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-# Constants
-MASK_TOKEN = 0
-SEQ_LENGTH = 20
-DATA_PATH = './dataset/ratings.dat'
-OUTPUT_DIR = './processed_data'
+import json
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
+from model import BERT4Rec
+from evaluate import evaluate_rerank
+from dataloader import TrainDataset, EvalDataset, eval_collate_fn
+from tqdm import tqdm
 
-def convert_to_csv(input_path, output_path):
-    """Convert MovieLens .dat file to CSV with proper headers."""
-    df = pd.read_csv(input_path, sep='::', engine='python', 
-                    names=['userId', 'movieId', 'rating', 'timestamp'])
-    df.to_csv(output_path, index=False)
-    print(f"Converted {input_path} to {output_path}")
+class EarlyStopping:
+    def __init__(self, patience=5):
+        self.patience = patience
+        self.counter = 0
+        self.best_score = None
 
-def create_sequences(data, seq_length, mask_prob=0.2):
-    """
-    Creates sequences with random masking for BERT4Rec.
-    Args:
-        data: DataFrame containing user-item interactions
-        seq_length: Fixed sequence length
-        mask_prob: Probability of masking an item
-    Returns:
-        sequences: Padded/truncated sequences with masks
-        labels: Ground truth for masked items
-        masks: Positions of masked items (1=masked, 0=not masked)
-    """
-    sequences, labels, masks = [], [], []
-    
-    for user in data['userId'].unique():
-        items = data[data['userId'] == user]['movieIdx'].values
-        
-        # Pad/truncate
-        if len(items) > seq_length:
-            items = items[-seq_length:]
+    def __call__(self, current_score, model):
+        if self.best_score is None or current_score > self.best_score:
+            self.best_score = current_score
+            self.counter = 0
+            torch.save(model.state_dict(), 'model.pt')
         else:
-            items = np.pad(items, (seq_length - len(items), 0), 
-                          'constant', constant_values=MASK_TOKEN)
-        
-        # Create masked sequence
-        masked_seq = items.copy()
-        mask_positions = np.random.choice(seq_length, size=int(seq_length * mask_prob), 
-                         replace=False)
-        
-        # Store labels only for masked positions
-        label_seq = np.full(seq_length, MASK_TOKEN)  # Default ignore index
-        label_seq[mask_positions] = items[mask_positions]
-        
-        # Apply masking
-        masked_seq[mask_positions] = MASK_TOKEN
-        
-        sequences.append(masked_seq)
-        labels.append(label_seq)
-        masks.append((masked_seq == MASK_TOKEN).astype(int))  # Binary mask
-    
-    return np.array(sequences), np.array(labels), np.array(masks)
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        return False
 
-# def create_eval_sequences(data, seq_length):
-#     sequences, labels, masks = [], [], []
-    
-#     for user in data['userId'].unique():
-#         items = data[data['userId'] == user]['movieIdx'].values
-#         if len(items) > seq_length:
-#             items = items[-seq_length:]
-#         else:
-#             items = np.pad(items, (seq_length - len(items), 0), 'constant', constant_values=MASK_TOKEN)
-        
-#         # Always mask the last token
-#         label_seq = np.full(seq_length, MASK_TOKEN)
-#         label_seq[-1] = items[-1]
-        
-#         masked_seq = items.copy()
-#         masked_seq[-1] = MASK_TOKEN  # Replace last item with [MASK]
-        
-#         mask = np.zeros(seq_length)
-#         mask[-1] = 1
-        
-#         sequences.append(masked_seq)
-#         labels.append(label_seq)
-#         masks.append(mask)
-    
-#     return np.array(sequences), np.array(labels), np.array(masks)
-
-
-def preprocess(data_path, output_dir=OUTPUT_DIR):
-    """Full preprocessing pipeline."""
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 1. Load and filter data
-    df = pd.read_csv(data_path)
-    df = df[df['rating'] >= 4].sort_values(['userId', 'timestamp'])
-    
-    # 2. Filter inactive users
-    user_counts = df['userId'].value_counts()
-    valid_users = user_counts[user_counts >= 5].index
-    df = df[df['userId'].isin(valid_users)]
-    
-    # 3. Create movieID mapping
-    movie_to_idx = {movie: idx+1 for idx, movie in enumerate(df['movieId'].unique())}
-    df['movieIdx'] = df['movieId'].map(movie_to_idx)
-    
-    # 4. Train/val/test split
-    users = df['userId'].unique()
-    train_users, temp_users = train_test_split(users, test_size=0.3, random_state=42)
-    val_users, test_users = train_test_split(temp_users, test_size=0.5, random_state=42)
-    
-    # 5. Create sequences
-    train_data = df[df['userId'].isin(train_users)]
-    val_data = df[df['userId'].isin(val_users)]
-    test_data = df[df['userId'].isin(test_users)]
-    
-    train_sequences, train_labels, train_masks = create_sequences(train_data, SEQ_LENGTH)
-    val_sequences, val_labels, val_masks = create_sequences(val_data, SEQ_LENGTH)
-    test_sequences, test_labels, test_masks = create_sequences(test_data, SEQ_LENGTH)
-    
-    # 6. Save everything
-    np.savez_compressed(
-        os.path.join(output_dir, 'train.npz'),
-        sequences=train_sequences,
-        labels=train_labels,
-        masks=train_masks
-    )
-    np.savez_compressed(
-        os.path.join(output_dir, 'val.npz'),
-        sequences=val_sequences,
-        labels=val_labels,
-        masks=val_masks
-    )
-    np.savez_compressed(
-        os.path.join(output_dir, 'test.npz'),
-        sequences=test_sequences,
-        labels=test_labels,
-        masks=test_masks
-    )
-    
-    with open(os.path.join(output_dir, 'metadata.json'), 'w') as f:
-        json.dump({
-            'movie_to_idx': {int(k): int(v) for k, v in movie_to_idx.items()},  # Convert keys/values to int
-            'num_items': int(len(movie_to_idx)),  # Ensure this is native int
-            'mask_token': int(MASK_TOKEN),
-            'seq_length': int(SEQ_LENGTH)
-        }, f)
-    print(f"Preprocessing complete. Files saved to {output_dir}")
 
 def main():
-    # Convert if needed
-    if not os.path.exists('./dataset/ratings.csv'):
-        convert_to_csv(DATA_PATH, './dataset/ratings.csv')
-    
-    # Run preprocessing
-    preprocess('./dataset/ratings.csv')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    data_dir = './processed_data'
+    batch_size = 64
 
-if __name__ == "__main__":
+    # Load metadata
+    with open(os.path.join(data_dir, 'metadata.json'), 'r') as f:
+        meta = json.load(f)
+
+    # Define mask token ID
+    mask_token = meta['num_items'] + 1
+
+    # Load preprocessed data
+    train_inputs = np.load(os.path.join(data_dir, 'train_inputs.npy'))
+    val_inputs   = np.load(os.path.join(data_dir, 'val_inputs.npy'))
+    val_labels   = np.load(os.path.join(data_dir, 'val_labels.npy'), allow_pickle=True)
+
+    # DataLoaders
+    train_loader = DataLoader(
+        TrainDataset(train_inputs, mask_token=mask_token, mask_prob=0.15),
+        batch_size=batch_size,
+        shuffle=True
+    )
+    val_loader = DataLoader(
+        EvalDataset(val_inputs, val_labels),
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=eval_collate_fn
+    )
+
+    # Model
+    model = BERT4Rec(
+        num_items=meta['num_items'],
+        hidden_size=256,
+        num_heads=4,
+        num_layers=2,
+        max_seq_len=meta['seq_length'],
+        dropout=0.2
+    ).to(device)
+
+    # Optimizer & schedulers
+    optimizer = AdamW(model.parameters(), lr=5e-4)
+    warmup_scheduler = LambdaLR(optimizer, lambda e: min((e+1)/5, 1.0))
+    main_scheduler  = CosineAnnealingLR(optimizer, T_max=45, eta_min=1e-5)
+    early_stopper   = EarlyStopping(patience=5)
+
+    # Training loop
+    for epoch in range(1, 51):
+        model.train()
+        epoch_loss = 0.0
+        for input_ids, labels in tqdm(train_loader, desc=f"Epoch {epoch}"):
+            input_ids, labels = input_ids.to(device), labels.to(device)
+            optimizer.zero_grad()
+            logits = model(input_ids)
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                labels.view(-1),
+                ignore_index=-100
+            )
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            epoch_loss += loss.item()
+
+        warmup_scheduler.step()
+        main_scheduler.step()
+
+        # Validation
+        metrics = evaluate_rerank(
+            model,
+            val_loader,
+            device,
+            num_items=meta['num_items'],
+            k=10,
+            neg_samples=99
+        )
+        avg_loss = epoch_loss / len(train_loader)
+        print(f"Epoch {epoch}: Loss={avg_loss:.4f}, Recall@10={metrics['recall']:.4f}, NDCG@10={metrics['ndcg']:.4f}")
+
+        if early_stopper(metrics['ndcg'], model):
+            print(f"Early stopping at epoch {epoch}. Best NDCG@10: {early_stopper.best_score:.4f}")
+            break
+
+
+if __name__ == '__main__':
     main()
