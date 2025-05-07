@@ -50,19 +50,23 @@ def preprocess(data_path: str = DATA_PATH, output_dir: str = OUTPUT_DIR):
         i1 = int(n * 0.7)
         i2 = int(n * 0.85)
 
+        # Training: use first i1 items as input
         train_seq = seq[:i1]
-        val_seq = seq[i1:i2]
-        test_seq = seq[i2:]
-
         train_input = padOrTruncate(train_seq)
-        val_input = padOrTruncate(seq[:i2]) 
-        test_input = padOrTruncate(seq[:i2]) 
+
+        # Validation: input is prefix up to i2, labels are seq[i1:i2]
+        val_input = padOrTruncate(seq[:i2])
+        val_label = seq[i1:i2]
+
+        # Test: input is same prefix up to i2, labels are seq[i2:]
+        test_input = padOrTruncate(seq[:i2])
+        test_label = seq[i2:]
 
         train_inputs.append(train_input)
         val_inputs.append(val_input)
         test_inputs.append(test_input)
-        val_labels.append(val_seq)
-        test_labels.append(test_seq)
+        val_labels.append(val_label)
+        test_labels.append(test_label)
         train_users.append(user)
         val_users.append(user)
         test_users.append(user)

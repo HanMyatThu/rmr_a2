@@ -19,8 +19,8 @@ class TrainDataset(Dataset):
     def __getitem__(self, idx):
         # Copy original sequence
         seq = self.sequences[idx].copy()
-        # Initialize labels: 0 for non-masked positions
-        labels = np.zeros(self.seq_length, dtype=np.int64)
+        # Initialize labels to -100 (ignore default index for loss calculation)
+        labels = np.full(self.seq_length, fill_value=-100, dtype=np.int64)
 
         # Determine candidate positions (non-pad tokens)
         non_pad_positions = np.where(seq != 0)[0]

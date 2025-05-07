@@ -3,11 +3,19 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import json
 import math
+import random
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from model import BERT4Rec
 from dataloader import EvalDataset, eval_collate_fn
+
+# set random seed for reproducibility
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(42)
 
 # use re-ranking evaluation strategy: with negative sampling 99
 def evaluate_rerank(
@@ -61,8 +69,6 @@ if __name__ == '__main__':
     # Load metadata
     with open(os.path.join(data_dir, 'metadata.json'), 'r') as f:
         meta = json.load(f)
-    num_items = meta['num_items']
-    seq_length = meta['seq_length']
 
     # Load test data
     test_inputs = np.load(os.path.join(data_dir, 'test_inputs.npy'))
@@ -83,11 +89,11 @@ if __name__ == '__main__':
 
     # reload model with same hyperparameters used during training
     model = BERT4Rec(
-        num_items=num_items,
+        num_items=meta['num_items'],
         hidden_size=256,
         num_heads=4,
         num_layers=2,
-        max_seq_len=seq_length,
+        max_seq_len=meta['seq_length'],
         dropout=0.2
     )
 
@@ -100,7 +106,7 @@ if __name__ == '__main__':
         model,
         test_loader,
         device,
-        num_items=num_items,
+        num_items=meta['num_items'],
         k=10,
         neg_samples=99
     )

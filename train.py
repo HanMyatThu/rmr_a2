@@ -3,6 +3,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import json
 import numpy as np
+import random
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -13,15 +14,32 @@ from evaluate import evaluate_rerank
 from dataloader import TrainDataset, EvalDataset, eval_collate_fn
 from tqdm import tqdm
 
+# set random seed for reproducibility
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 class EarlyStopping:
     def __init__(self, patience=5):
         self.patience = patience
         self.counter = 0
         self.best_score = None
+        self.recall_value = None
+        self.best_epoch = None
 
-    def __call__(self, current_score, model):
+    def __call__(self, current_score, recall_score, epoch, model):
+
+        # just storing for tracking (storing recall value)
+        if self.recall_value is None or recall_score > self.recall_value:
+            self.recall_value = recall_score
+
         if self.best_score is None or current_score > self.best_score:
             self.best_score = current_score
+            self.recall_value = recall_score
+            self.best_epoch = epoch
             self.counter = 0
             torch.save(model.state_dict(), 'model.pt')
         else:
@@ -32,6 +50,7 @@ class EarlyStopping:
 
 
 def main():
+    set_seed(42)     # Set random seed for reproducibility
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     data_dir = './processed_data'
     batch_size = 64
@@ -110,10 +129,9 @@ def main():
         avg_loss = epoch_loss / len(train_loader)
         print(f"Epoch {epoch}: Loss={avg_loss:.4f}, Recall@10={metrics['recall']:.4f}, NDCG@10={metrics['ndcg']:.4f}")
 
-        if early_stopper(metrics['ndcg'], model):
-            print(f"Early stopping at epoch {epoch}. Best NDCG@10: {early_stopper.best_score:.4f}")
+        if early_stopper(metrics['ndcg'],metrics['recall'], epoch, model):
+            print(f"Best Epoch: {early_stopper.best_epoch:.4f}, Best Recall@10: {early_stopper.recall_value:.4f}, Best NDCG@10: {early_stopper.best_score:.4f}")
             break
-
 
 if __name__ == '__main__':
     main()
