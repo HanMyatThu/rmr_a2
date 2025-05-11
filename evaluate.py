@@ -101,7 +101,7 @@ if __name__ == '__main__':
         num_items=meta['num_items'],
         hidden_size=256,
         num_heads=4,
-        num_layers=2,
+        num_layers=4,
         max_seq_len=meta['seq_length'],
         dropout=0.2
     )

@@ -54,7 +54,7 @@ def main():
     set_seed(42)     # Set random seed for reproducibility
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     data_dir = './processed_data'
-    batch_size = 64
+    batch_size = 32
 
     # Load metadata
     with open(os.path.join(data_dir, 'metadata.json'), 'r') as f:
@@ -86,13 +86,13 @@ def main():
         num_items=meta['num_items'],
         hidden_size=256,
         num_heads=4,
-        num_layers=2,
+        num_layers=4,
         max_seq_len=meta['seq_length'],
         dropout=0.2
     ).to(device)
 
     # Optimizer & schedulers
-    optimizer = AdamW(model.parameters(), lr=5e-4)
+    optimizer = AdamW(model.parameters(), lr=1e-3)
     warmup_scheduler = LambdaLR(optimizer, lambda e: min((e+1)/5, 1.0))
     main_scheduler  = CosineAnnealingLR(optimizer, T_max=100, eta_min=1e-5)
     early_stopper   = EarlyStopping(patience=5)

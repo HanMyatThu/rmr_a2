@@ -4,7 +4,7 @@ import json
 import os
 
 PAD_TOKEN = 0
-SEQ_LENGTH = 20
+SEQ_LENGTH = 50
 DATA_PATH = './dataset/ratings.dat'
 OUTPUT_DIR = './processed_data'
 
