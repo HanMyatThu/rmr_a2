@@ -6,6 +6,7 @@ class TrainDataset(Dataset):
     """
     Dataset for training BERT4Rec with masked item prediction.
     Returns input sequences with random masks and corresponding labels.
+    Implements BERT-style 80/10/10 masking within a 15% mask probability.
     """
     def __init__(self, sequences: np.ndarray, mask_token: int, mask_prob: float = 0.15):
         self.sequences = sequences
@@ -19,7 +20,7 @@ class TrainDataset(Dataset):
     def __getitem__(self, idx):
         # Copy original sequence
         seq = self.sequences[idx].copy()
-        # Initialize labels to -100 (ignore default index for loss calculation)
+        # Initialize labels to -100 (ignore index for loss)
         labels = np.full(self.seq_length, fill_value=-100, dtype=np.int64)
 
         # Determine candidate positions (non-pad tokens)
@@ -29,10 +30,20 @@ class TrainDataset(Dataset):
         # Randomly choose positions to mask
         mask_positions = np.random.choice(non_pad_positions, num_to_mask, replace=False)
 
-        # Apply masking
         for pos in mask_positions:
-            labels[pos] = seq[pos]        # store original item for loss
-            seq[pos] = self.mask_token   # replace with mask token
+            # Set label to original item id
+            labels[pos] = seq[pos]
+            rand = np.random.rand()
+            if rand < 0.8:
+                # 80% of the time, replace with [MASK]
+                seq[pos] = self.mask_token
+            elif rand < 0.9:
+                # 10% of the time, replace with random item id (excluding PAD and MASK)
+                # assume item ids are in [1, mask_token-1]
+                seq[pos] = np.random.randint(1, self.mask_token)
+            else:
+                # 10% of the time, keep original item (no change)
+                pass
 
         return torch.LongTensor(seq), torch.LongTensor(labels)
 
@@ -57,7 +68,7 @@ class EvalDataset(Dataset):
 def eval_collate_fn(batch):
     """
     Collate for EvalDataset: stacks the input tensors and gathers
-    each user’s variable‐length list of future_items into a Python list.
+    each user’s variable-length list of future_items into a Python list.
     """
     seqs = torch.stack([item[0] for item in batch], dim=0)
     future_items = [item[1] for item in batch]

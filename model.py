@@ -11,8 +11,8 @@ class BERT4Rec(nn.Module):
         self,
         num_items: int,
         hidden_size: int = 512,
-        num_heads: int = 8,     
-        num_layers: int = 4,
+        num_heads: int = 4,     
+        num_layers: int = 6,
         max_seq_len: int = 20,
         dropout: float = 0.1
     ):

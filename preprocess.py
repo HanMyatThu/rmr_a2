@@ -14,6 +14,7 @@ def padOrTruncate(seq, max_len=SEQ_LENGTH):
         return seq[-max_len:]
     return [PAD_TOKEN] * (max_len - len(seq)) + seq
 
+
 def preprocess(data_path: str = DATA_PATH, output_dir: str = OUTPUT_DIR):
     os.makedirs(output_dir, exist_ok=True)
 
@@ -44,7 +45,7 @@ def preprocess(data_path: str = DATA_PATH, output_dir: str = OUTPUT_DIR):
 
     # split each user's sequence into train/val/test and prepare contexts & labels
     for user, seq in userSequence.items():
-        # split dataset into train 70%, 15%, 15%
+        # remap items
         seq = [item2idx[i] for i in seq]
         n = len(seq)
         i1 = int(n * 0.7)
@@ -54,11 +55,11 @@ def preprocess(data_path: str = DATA_PATH, output_dir: str = OUTPUT_DIR):
         train_seq = seq[:i1]
         train_input = padOrTruncate(train_seq)
 
-        # Validation: input is prefix up to i2, labels are seq[i1:i2]
-        val_input = padOrTruncate(seq[:i2])
+        # Validation: input is prefix up to i1, labels are seq[i1:i2]
+        val_input = padOrTruncate(seq[:i1])
         val_label = seq[i1:i2]
 
-        # Test: input is same prefix up to i2, labels are seq[i2:]
+        # Test: input is prefix up to i2, labels are seq[i2:]
         test_input = padOrTruncate(seq[:i2])
         test_label = seq[i2:]
 
@@ -71,17 +72,15 @@ def preprocess(data_path: str = DATA_PATH, output_dir: str = OUTPUT_DIR):
         val_users.append(user)
         test_users.append(user)
 
-    # input sequences with pad
+    # save inputs and labels
     np.save(os.path.join(output_dir, 'train_inputs.npy'), np.array(train_inputs, dtype=np.int32))
     np.save(os.path.join(output_dir, 'val_inputs.npy'),   np.array(val_inputs,   dtype=np.int32))
     np.save(os.path.join(output_dir, 'test_inputs.npy'),  np.array(test_inputs,  dtype=np.int32))
-    # save labels
-    np.save(os.path.join(output_dir, 'val_labels.npy'),  np.array(val_labels,   dtype=object))
-    np.save(os.path.join(output_dir, 'test_labels.npy'), np.array(test_labels,  dtype=object))
-    # save user-id mapping
-    np.save(os.path.join(output_dir, 'train_users.npy'), np.array(train_users))
-    np.save(os.path.join(output_dir, 'val_users.npy'),   np.array(val_users))
-    np.save(os.path.join(output_dir, 'test_users.npy'),  np.array(test_users))
+    np.save(os.path.join(output_dir, 'val_labels.npy'),   np.array(val_labels,   dtype=object))
+    np.save(os.path.join(output_dir, 'test_labels.npy'),  np.array(test_labels,  dtype=object))
+    np.save(os.path.join(output_dir, 'train_users.npy'),  np.array(train_users))
+    np.save(os.path.join(output_dir, 'val_users.npy'),    np.array(val_users))
+    np.save(os.path.join(output_dir, 'test_users.npy'),   np.array(test_users))
 
     # save metadata
     meta = {

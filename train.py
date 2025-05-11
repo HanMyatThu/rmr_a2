@@ -13,6 +13,7 @@ from model import BERT4Rec
 from evaluate import evaluate_rerank
 from dataloader import TrainDataset, EvalDataset, eval_collate_fn
 from tqdm import tqdm
+from logger import TrainingLogger
 
 # set random seed for reproducibility
 def set_seed(seed: int = 42):
@@ -93,12 +94,15 @@ def main():
     # Optimizer & schedulers
     optimizer = AdamW(model.parameters(), lr=5e-4)
     warmup_scheduler = LambdaLR(optimizer, lambda e: min((e+1)/5, 1.0))
-    main_scheduler  = CosineAnnealingLR(optimizer, T_max=45, eta_min=1e-5)
+    main_scheduler  = CosineAnnealingLR(optimizer, T_max=100, eta_min=1e-5)
     early_stopper   = EarlyStopping(patience=5)
 
+    # For saving training metrics
+    logger = TrainingLogger()
     # Training loop
-    for epoch in range(1, 51):
+    for epoch in range(1, 101):
         model.train()
+        logger.start_epoch()
         epoch_loss = 0.0
         for input_ids, labels in tqdm(train_loader, desc=f"Epoch {epoch}"):
             input_ids, labels = input_ids.to(device), labels.to(device)
@@ -127,11 +131,15 @@ def main():
             neg_samples=99
         )
         avg_loss = epoch_loss / len(train_loader)
+        logger.log_epoch(epoch, avg_loss, metrics['recall'], metrics['ndcg'])
         print(f"Epoch {epoch}: Loss={avg_loss:.4f}, Recall@10={metrics['recall']:.4f}, NDCG@10={metrics['ndcg']:.4f}")
 
         if early_stopper(metrics['ndcg'],metrics['recall'], epoch, model):
             print(f"Best Epoch: {early_stopper.best_epoch:.4f}, Best Recall@10: {early_stopper.recall_value:.4f}, Best NDCG@10: {early_stopper.best_score:.4f}")
             break
+
+    # save log for analysis
+    logger.save("training_history.csv")
 
 if __name__ == '__main__':
     main()

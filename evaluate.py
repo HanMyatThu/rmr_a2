@@ -17,47 +17,62 @@ torch.manual_seed(42)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(42)
 
-# use re-ranking evaluation strategy: with negative sampling 99
 def evaluate_rerank(
     model, dataloader, device, num_items, k=10, neg_samples=99
 ):
     model.eval()
     items = np.arange(1, num_items + 1)
     recalls, ndcgs = [], []
+    pad_token = model.pad_token
+    mask_token = model.mask_token
 
     with torch.no_grad():
         for seqs, future_items_list in dataloader:
             seqs = seqs.to(device)
-            logits = model(seqs)
-            scores = logits[:, -1, :].cpu().numpy()  # use last position predictions
+            batch_size, seq_len = seqs.size()
+
+            # Mask the last non-pad position for each sequence
+            masked_seqs = seqs.clone()
+            mask_positions = []
+            for i in range(batch_size):
+                non_pad = torch.nonzero(seqs[i] != pad_token, as_tuple=True)[0]
+                pos = non_pad[-1].item() if len(non_pad) > 0 else 0
+                masked_seqs[i, pos] = mask_token
+                mask_positions.append(pos)
+
+            # Forward pass
+            logits = model(masked_seqs)
+            # Extract logits at masked positions
+            scores = logits[torch.arange(batch_size), mask_positions, :].cpu().numpy()
 
             for i, future_items in enumerate(future_items_list):
                 if len(future_items) == 0:
                     continue
 
-                # Build negative pool excluding user history
+                # Evaluate only the immediate next item
+                true_item = future_items[0]
+                # Negative sampling excluding user history
                 user_history = set(seqs[i].cpu().numpy().tolist())
                 neg_pool = [x for x in items if x not in user_history]
-                negs  = np.random.choice(neg_pool, neg_samples, replace=False)
+                negs = np.random.choice(neg_pool, neg_samples, replace=False)
 
-                # candidatges: true items + negatives
-                users = np.concatenate([np.array(future_items), negs])
-                users_scores = scores[i, users]
-                rank_indices = np.argsort(-users_scores)
-                top_k_users = users[rank_indices][:k]
+                # Candidates: one positive + negatives
+                candidates = np.concatenate([[true_item], negs])
+                candidate_scores = scores[i, candidates]
+                rank_indices = np.argsort(-candidate_scores)
+                top_k = candidates[rank_indices][:k]
 
-                # recall: percentage of true items in top k !!
-                hits    = set(future_items) & set(top_k_users.tolist())
-                recall  = len(hits) / len(future_items)
+                # Recall@k
+                recall = 1.0 if true_item in top_k else 0.0
                 recalls.append(recall)
 
-                # NDCG
-                dcg = 0.0
-                for rank, item in enumerate(top_k_users):
-                    if item in hits:
-                        dcg += 1.0 / math.log2(rank + 2)
-                idcg = sum(1.0 / math.log2(i + 2) for i in range(min(len(future_items), k)))
-                ndcgs.append(dcg / idcg if idcg > 0 else 0.0)
+                # NDCG@k
+                if true_item in top_k:
+                    rank = int(np.where(top_k == true_item)[0][0])
+                    ndcg = 1.0 / math.log2(rank + 2)
+                else:
+                    ndcg = 0.0
+                ndcgs.append(ndcg)
 
     return {'recall': np.mean(recalls), 'ndcg': np.mean(ndcgs)}
 
@@ -73,12 +88,6 @@ if __name__ == '__main__':
     # Load test data
     test_inputs = np.load(os.path.join(data_dir, 'test_inputs.npy'))
     test_labels = np.load(os.path.join(data_dir, 'test_labels.npy'), allow_pickle=True)
-    
-    # debug issue on test
-    train_inputs = np.load(os.path.join(data_dir, 'train_inputs.npy'))
-    test_items = set(np.concatenate(test_labels))
-    train_items = set(np.unique(train_inputs))
-    print(f"Test items not in training: {len(test_items - train_items)}")
 
     test_loader = DataLoader(
         EvalDataset(test_inputs, test_labels),
@@ -87,7 +96,7 @@ if __name__ == '__main__':
         collate_fn=eval_collate_fn
     )
 
-    # reload model with same hyperparameters used during training
+    # Reload model with same hyperparameters used during training
     model = BERT4Rec(
         num_items=meta['num_items'],
         hidden_size=256,
@@ -96,9 +105,7 @@ if __name__ == '__main__':
         max_seq_len=meta['seq_length'],
         dropout=0.2
     )
-
-    state = torch.load(checkpoint, map_location=device)
-    model.load_state_dict(state)
+    model.load_state_dict(torch.load(checkpoint, map_location=device))
     model.to(device)
 
     # Run evaluation
@@ -111,4 +118,3 @@ if __name__ == '__main__':
         neg_samples=99
     )
     print(f"Test Recall@10: {metrics['recall']:.4f}, Test NDCG@10: {metrics['ndcg']:.4f}")
-
