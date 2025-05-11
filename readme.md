@@ -8,6 +8,34 @@ A comprehensive command-line tool for recommender systems based on BERT4Rec, sup
 
 RecSys CLI is a versatile command-line tool for recommendation systems using the BERT4Rec architecture. It provides a complete pipeline from data preprocessing to model training, evaluation, and hyperparameter optimization through ablation studies.
 
+
+## Project Structure
+
+Submitted Folder stands for the submission of assignment in a compressed version.
+
+```bash
+.
+├── dataset/                     # MovieLens 1M dataset
+├── processed_data/              # processed data
+├── submitted/                   # Submission for Assignment (Leiden)
+│   ├── dataset
+│   ├── processed_data
+│   ├── early_stop_best_model.pt
+│   ├── model.pt                 # Last trained best model
+│   ├── res_sys_cli.py           # Submitted merged_version/ run the simulation (Read instruction below)
+├── ncf_merged.py        # main file to run the simulation
+├── README.md            # Readme.md
+├── logger.py            # logging data metrics
+├── preprocess.py        # Data Processing
+├── Debug.py             # For debugging the processed data to check correctness
+├── model.py             # BERT4REC model
+├── train.py             # to train the model
+├── evaluate.py          # to load the trained model and evaluate with test data
+├── dataloader.py        # class for masking preprocessed data
+
+```
+
+
 ## Features
 
 - **Data Preprocessing**: Converts MovieLens 1M dataset into usable format for model training
@@ -176,6 +204,16 @@ python rec_sys_cli.py ablation
 # Example (your optimal values may differ):
 python rec_sys_cli.py train --batch_size 128 --hidden_size 256 --num_layers 4 --dropout 0.1 --lr 5e-4
 ```
+
+## Note
+
+You can also run the experiment, by running these files in order.
+
+1. python preprocess.py
+2. python train.py
+3. python evaluate.py
+
+** python debug.py ** to check processed data
 
 ## Acknowledgements
 
